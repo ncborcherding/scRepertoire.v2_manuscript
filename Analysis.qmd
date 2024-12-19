@@ -8,9 +8,9 @@ editor: visual
 
 ## Loading Libraries
 
-``` {r} 
+``` {r message=FALSE, warning=FALSE} 
 packages <- c(
-  "Azimuth", "BiocParallel", "celldex", "dplyr", "ggplot2",
+  "Azimuth", "BiocParallel", "celldex", "dplyr", "ggplot2", "harmony",
   "patchwork", "RColorBrewer", "scDblFinder", "scGate",
   "scRepertoire", "scran", "Seurat", "SeuratData", "SingleR", 
   "viridis"
@@ -29,7 +29,7 @@ options(future.globals.maxSize = 8000 * 1024^2)
 
 ## Processing Sequencing Runs
 
-```{r}
+```{r  message=FALSE, warning=FALSE}
 dir.create("./qc")
 
 file_list <- list.files("./inputs/data/GSE169440")
@@ -41,6 +41,9 @@ for (i in seq_along(file_list)){
     SeuratObj <-  CreateSeuratObject(counts = tmp, 
                                      assay = "RNA",
                                project = file_list[i])
+    
+    SeuratObj$nCount_RNA <- colSums(SeuratObj@assays$RNA@counts)
+    SeuratObj$nFeature_RNA <- colSums(SeuratObj@assays$RNA@counts != 0)
     # Filter out low count/feature cells
     SeuratObj <-  subset(SeuratObj, subset = nFeature_RNA > 100) 
     
@@ -144,9 +147,47 @@ for (i in seq_along(file_list)){
     #################################
     #Saving Preliminary Seurat Object
     #################################
-    saveRDS(SeuratObj, paste0("./data/processedData/", file_list[i], ".rds"))
+    saveRDS(SeuratObj, paste0("./inputs/data/processedData/", file_list[i], ".rds"))
     rm(SeuratObj)
     rm(tmp)
     gc()
 }
 ```
+
+## Integrate Cohort
+
+```{r}
+files <- list.files("./inputs/data/processedData/")
+
+object.list <- lapply(seq_len(length(files)), function(x) {
+    obj <- readRDS(paste0("./inputs/data/processedData/", files[x]))
+})
+object.merge <- merge(object.list[[1]], object.list[-1])
+
+object.merge  <- NormalizeData(object.merge )
+object.merge  <- FindVariableFeatures(object.merge, nfeatures = 2500)
+
+object.merge <- Ibex::quietBCRgenes(object.merge)
+object.merge <- Trex::quietTCRgenes(object.merge)
+
+object.merge  <- ScaleData(object.merge,
+                           verbose = FALSE, 
+                           vars.to.regress = c("mito.genes"))
+object.merge  <- RunPCA(object.merge, 
+                        verbose = FALSE)
+object.merge <- RunHarmony(object.merge, "orig.ident")
+
+object.merge <- RunUMAP(object.merge, 
+                        reduction = "harmony", 
+                        dims = 1:30, 
+                        reduction.name = "umap.harmony") 
+
+#################
+#TO DO List
+##################
+#Cluster Cells/Find Neighbors
+
+
+saveRDS(object.merge, paste0("./inputs/data/IntegratedSeuratObject.rds"))
+```
+
