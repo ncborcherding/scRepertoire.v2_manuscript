@@ -6,7 +6,7 @@ editor: visual
 
 ## Loading Libraries
 
-``` {r message=FALSE, warning=FALSE} 
+```{r message=FALSE, warning=FALSE}
 packages <- c(
   "Azimuth", "BiocParallel", "celldex", "dplyr", "ggplot2", 
   "ggthemes", "harmony", "patchwork", "RColorBrewer", 
@@ -23,6 +23,8 @@ HPCA <- celldex::HumanPrimaryCellAtlasData()
 Monaco <- celldex::MonacoImmuneData()
 
 options(future.globals.maxSize = 8000 * 1024^2)
+
+"%!in%" <- Negate("%in%")
 ```
 
 ## Processing Sequencing Runs
@@ -34,8 +36,8 @@ file_list <- list.files("./inputs/data/GSE169440", full.names = FALSE) # Correct
 
 # Helper functions
 calculate_qc_metrics <- function(seurat_obj) {
-  seurat_obj$nCount_RNA <- colSums(seurat_obj@assays$RNA@counts)
-  seurat_obj$nFeature_RNA <- colSums(seurat_obj@assays$RNA@counts != 0)
+  seurat_obj$nCount_RNA <- colSums(seurat_obj@assays$RNA@layers$counts)
+  seurat_obj$nFeature_RNA <- colSums(seurat_obj@assays$RNA@layers$counts != 0)
   seurat_obj[["mito.genes"]] <- PercentageFeatureSet(seurat_obj, pattern = "^MT-")
   seurat_obj[["ribo.genes"]] <- PercentageFeatureSet(seurat_obj, pattern = "^RPS|RPL-")
   return(seurat_obj)
@@ -208,27 +210,37 @@ object.merge$Cluster_Types <- recode(as.character(object.merge$seurat_clusters),
 celltype.palette <- tableau_color_pal(palette = "Tableau 20")(length(unique(object.merge$Cluster_Types)))
 object.merge$Cluster_Types <- factor(object.merge$Cluster_Types, sort(unique(object.merge$Cluster_Types))[c(2:11,1,12)])
 
-DimPlot(object.merge, group.by = "Cluster_Types") + 
-  scale_color_manual(values = celltype.palette) + 
-  theme_minimal() + 
-  theme(plot.title = element_blank(), 
-        axis.title = element_text(family="Arial", size=8, color = "black"), 
-        axis.text = element_text(family="Arial", size=6, color = "black")) + 
+plot1 <- DimPlot(object.merge, group.by = "Cluster_Types") + 
+                  scale_color_manual(values = celltype.palette) + 
+                  theme_minimal() + 
+                  theme(plot.title = element_blank(), 
+                        axis.title = element_text(family="Arial", size=8, color = "black"), 
+                        axis.text = element_text(family="Arial", size=6, color = "black"), 
+                        legend.text = element_text(family="Arial", size=6, color = "black")) + 
   
-  ylab("UMAP2") + 
-  xlab("UMAP1")
-ggsave("output/Figure1A_P1.png", height = 4, width = 6.5, dpi = 300)
+                    ylab("UMAP2") + 
+                    xlab("UMAP1")
 
-DimPlot(object.merge, group.by = "cloneSize") + 
-  scale_color_viridis(option = "inferno", discrete = TRUE, direction = -1) + 
-  theme_minimal() + 
-  theme(plot.title = element_blank(), 
-        axis.title = element_text(family="Arial", size=8, color = "black"), 
-        axis.text = element_text(family="Arial", size=6, color = "black")) + 
-  
-  ylab("UMAP2") + 
-  xlab("UMAP1")
-ggsave("output/Figure1A_P2.png", height = 4, width = 7.0, dpi = 300)
+plot2 <- DimPlot(object.merge, group.by = "cloneSize") + 
+                  scale_color_viridis(option = "inferno", discrete = TRUE, direction = -1) + 
+                  theme_minimal() + 
+                  theme(plot.title = element_blank(), 
+                        axis.title = element_text(family="Arial", size=8, color = "black"), 
+                        axis.text = element_text(family="Arial", size=6, color = "black"), 
+                        legend.position = c(1,1),
+                        legend.justification = c("right", "top"),
+                        legend.box.just = "right",
+                        legend.margin = margin(6, 6, 6, 6), 
+                        legend.text = element_text(family="Arial", size=6, color = "black")) + 
+                  ylab("UMAP2") + 
+                  xlab("UMAP1")
+
+plot1 
+ggsave("output/Figure2A.png", height = 4, width = 6.5, dpi = 300)
+
+#Add quantification of B/Tcell clones as plot3
+plot2 + plot3 + plot_layout(widths = c(4, 1))
+ggsave("output/Figure2B.png", height = 4, width = 6.5, dpi = 300)
 
 # 6. Save the integrated object
 saveRDS(object.merge, "./inputs/data/IntegratedSeuratObject.rds")
@@ -236,46 +248,101 @@ saveRDS(object.merge, "./inputs/data/IntegratedSeuratObject.rds")
 
 ## Clonal Analysis
 
+### Clonal Proportion
+
 ```{r}
-clonalProportion(object.merge,
+plot1 <- clonalProportion(object.merge,
                   group.by = "orig.ident", 
                   cloneCall = "strict", 
-                 clonalSplit = c(1, 5, 10, 100, 1000, 10000)) + 
-  coord_flip()
+                  clonalSplit = c(1, 5, 10, 100, 1000, 10000)) + 
+                  coord_flip() + 
+  scale_x_discrete(limits=rev) +
+  theme(axis.title.y = element_blank(), 
+        axis.title = element_text(family="Arial", size=8, color = "black"), 
+        axis.text = element_text(family="Arial", size=6, color = "black"))
+
+plot2 <- clonalProportion(object.merge,
+                          group.by = "Cluster_Types",
+                  cloneCall = "strict", 
+                  clonalSplit = c(1, 5, 10, 100, 1000, 10000)) + 
+                  coord_flip() + 
+  scale_x_discrete(limits=rev) + 
+  theme(axis.title.y = element_blank(), 
+        axis.title = element_text(family="Arial", size=8, color = "black"), 
+        axis.text = element_text(family="Arial", size=6, color = "black"))
+
+plot1 + plot2 + plot_layout(guides = "collect")
+ggsave("output/Figure2C.png", height = 4, width = 7.0, dpi = 300)
 ```
 
+### Seperating B and T Cells
+
 ```{r}
-percentGenes(object.merge, 
-             gene = "V", 
-             chain = "TRB",
-             group.by = "orig.ident")
-df.genes <- percentGenes(object.merge, 
-                         gene = "V", 
-                         chain = "TRB",
-                         group.by = "orig.ident",
-                         exportTable = TRUE)
+T.types <- c("CD4_TCM/Naive", "CD4_T1_Inf_Stimulated","CD4_TH17", "CD8_Exhausted", 
+             "CD4_Treg", "CD8_TEM", "CD8_CTL", "CD8_TCM/Naive", "CD4/CD8_Proliferating", 
+             "MAIT", "CD4_TEM", "CD4_TEM")
+object.TCells <- subset(object.merge, Cluster_Types %in% T.types)
+object.BCells <- subset(object.merge, Cluster_Types %!in% T.types)
+```
 
-#Performing PCA
-pc <- prcomp(df.genes)
+### Comparing Clones
 
-#Getting data frame to plot from
-df <- as.data.frame(cbind(pc$x[,1:2], rownames(df.genes)))
-df$PC1 <- as.numeric(df$PC1)
-df$PC2 <- as.numeric(df$PC2)
+```{r}
+plot1 <- clonalCompare(object.TCells,
+              cloneCall = "strict",
+              top.clones = 20,
+              samples = c("192566","192566SKL","192566SKN"),
+              group.by = "orig.ident", 
+              palette = "inferno") + 
+  guides(fill = "none") + 
+  theme(axis.title = element_blank(), 
+        axis.text = element_text(family="Arial", size=6, color = "black"))
 
-#Plotting
-ggplot(df, aes(x = PC1, y = PC2)) + 
-  geom_point(aes(fill =df[,3]), shape = 21, size = 5) + 
-  guides(fill=guide_legend(title="Samples")) + 
-  scale_fill_manual(values = hcl.colors(nrow(df), "inferno")) + 
-  theme_classic() 
 
-percentGenes(object.merge, 
-             gene = "V", 
-             chain = "TRA",
-             group.by = "orig.ident")
+plot2 <- clonalCompare(object.TCells,
+              cloneCall = "strict",
+              top.clones = 20,
+              samples = c("192561SKL", "192561SKN"),
+              group.by = "orig.ident", 
+              palette = "inferno") + 
+  guides(fill = "none") + 
+  theme(axis.title = element_blank(), 
+        axis.text = element_text(family="Arial", size=6, color = "black"))
 
-df.genes <- percentGenes(object.merge, 
+plot3 <- clonalCompare(object.TCells,
+              cloneCall = "strict",
+              top.clones = 20,
+              samples = c("192565SKL", "192565SKN"),
+              group.by = "orig.ident", 
+              palette = "inferno") + 
+  guides(fill = "none") + 
+  theme(axis.title = element_blank(), 
+        axis.text = element_text(family="Arial", size=6, color = "black"))
+
+plot4 <- clonalCompare(object.TCells,
+              cloneCall = "strict",
+              top.clones = 20,
+              samples = c("192566SKL", "192566SKN"),
+              group.by = "orig.ident", 
+              palette = "inferno") + 
+  guides(fill = "none") + 
+  theme(axis.title = element_blank(), 
+        axis.text = element_text(family="Arial", size=6, color = "black"))
+
+plot1 + plot2 + plot3 + plot4 + plot_layout(ncol = 4)
+ggsave("output/Figure2D.png", height = 3, width = 8, dpi = 300)
+```
+
+### Percent Genes
+
+```{r}
+plot1 <- percentGenes(object.TCells, 
+                       gene = "V", 
+                       chain = "TRA",
+                       group.by = "orig.ident") +
+                theme(axis.text = element_text(family="Arial", size=6, color = "black"))
+
+df.genes <- percentGenes(object.TCells, 
                          gene = "V", 
                          chain = "TRA",
                          group.by = "orig.ident",
@@ -290,31 +357,51 @@ df$PC1 <- as.numeric(df$PC1)
 df$PC2 <- as.numeric(df$PC2)
 
 #Plotting
-ggplot(df, aes(x = PC1, y = PC2)) + 
-  geom_point(aes(fill =df[,3]), shape = 21, size = 5) + 
-  guides(fill=guide_legend(title="Samples")) + 
-  scale_fill_manual(values = hcl.colors(nrow(df), "inferno")) + 
-  theme_classic() 
+plot2 <- ggplot(df, aes(x = PC1, y = PC2)) + 
+                geom_point(aes(fill =df[,3]), shape = 21, size = 5) + 
+                guides(fill=guide_legend(title="Samples")) + 
+                scale_fill_manual(values = hcl.colors(nrow(df), "inferno")) + 
+                theme_minimal() +
+                ylab("PC2") + 
+                xlab("PC1") + 
+                theme(axis.title = element_text(family="Arial", size=8, color = "black"), 
+                      axis.text = element_text(family="Arial", size=6, color = "black"))
+
+plot1 + plot2 + plot_layout(ncol = 2, 
+                                            widths = c(1.3, 1))
+ggsave("output/Figure2E.png", height = 4, width = 10, dpi = 300)
 ```
 
+### Clonal Rarefaction
 
 ```{r}
-clonalRarefaction(object.merge,
-                  group.by = "orig.ident",
-                  plot.type = 2,
-                  hill.numbers = 1,
-                  n.boots = 2)
+plot1 <- clonalRarefaction(object.TCells,
+                           group.by = "orig.ident",
+                           plot.type = 2,
+                           hill.numbers = 1,
+                           n.boots = 10) + 
+  xlab("Number of Clones") + 
+  theme_minimal() + 
+  theme(axis.title = element_text(family="Arial", size=8, color = "black"), 
+        axis.text = element_text(family="Arial", size=6, color = "black"))
+
+plot2 <- clonalRarefaction(object.TCells,
+                           group.by = "orig.ident",
+                           plot.type = 3,
+                           hill.numbers = 1,
+                           n.boots = 10) + 
+  theme_minimal() + 
+  theme(axis.title = element_text(family="Arial", size=8, color = "black"), 
+        axis.text = element_text(family="Arial", size=6, color = "black"))
+
+plot1 + plot2 + plot_layout(guides = "collect")
+ggsave("output/Figure2F.png", height = 4, width = 9, dpi = 300)
 ```
 
-```{r}
-clonalSizeDistribution(object.merge,
-                       group.by = "orig.ident", 
-                       cloneCall = "aa", 
-                       method= "ward.D2")
-```
+### Clustering Clones
 
 ```{r}
-object.merge <- clonalCluster(object.merge, 
+object.merge <- clonalCluster(object.BCells, 
                                chain = "TRB", 
                                sequence = "aa", 
                                threshold = 0.85, 
@@ -334,23 +421,11 @@ DimPlot(object.merge, group.by = "TRA_cluster") +
     scale_color_manual(values =  hcl.colors(n=length(unique(object.merge@meta.data[,"TRA_cluster"])), "inferno")) + 
   NoLegend()
 ```
+
 ```{r}
-igraph.object <- clonalCluster(object.merge, 
-                               chain = "TRB", 
+igraph.object <- clonalCluster(object.BCells, 
+                               chain = "IGH", 
                                sequence = "aa", 
-                               threshold = 0.85, 
-                               group.by = "orig.ident", 
+                               threshold = 0.80, 
                                exportGraph = TRUE)
 ```
-
-```{r}
-circles <- getCirclize(object.merge, 
-                       group.by = "Cluster_Types")
-
-#Just assigning the normal colors to each cluster
-names(celltype.palette) <- 1:15
-
-#Graphing the chord diagram
-chordDiagram(circles, self.link = 1, grid.col = grid.cols)
-```
-
