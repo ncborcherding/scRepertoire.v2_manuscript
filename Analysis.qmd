@@ -4,16 +4,14 @@ format: html
 editor: visual
 ---
 
-# 
-
 ## Loading Libraries
 
 ``` {r message=FALSE, warning=FALSE} 
 packages <- c(
-  "Azimuth", "BiocParallel", "celldex", "dplyr", "ggplot2", "harmony",
-  "patchwork", "RColorBrewer", "scDblFinder", "scGate",
-  "scRepertoire", "scran", "Seurat", "SeuratData", "SingleR", 
-  "viridis"
+  "Azimuth", "BiocParallel", "celldex", "dplyr", "ggplot2", 
+  "ggthemes", "harmony", "patchwork", "RColorBrewer", 
+  "scDblFinder", "scGate", "scRepertoire", "scran", "Seurat", 
+  "SeuratData", "SingleR", "viridis"
 )
 
 suppressPackageStartupMessages(
@@ -30,164 +28,329 @@ options(future.globals.maxSize = 8000 * 1024^2)
 ## Processing Sequencing Runs
 
 ```{r  message=FALSE, warning=FALSE}
-dir.create("./qc")
+# Setup
+dir.create("./qc", showWarnings = FALSE)
+file_list <- list.files("./inputs/data/GSE169440", full.names = FALSE) # Corrected: added full.names = FALSE to match original code's intent
 
-file_list <- list.files("./inputs/data/GSE169440")
+# Helper functions
+calculate_qc_metrics <- function(seurat_obj) {
+  seurat_obj$nCount_RNA <- colSums(seurat_obj@assays$RNA@counts)
+  seurat_obj$nFeature_RNA <- colSums(seurat_obj@assays$RNA@counts != 0)
+  seurat_obj[["mito.genes"]] <- PercentageFeatureSet(seurat_obj, pattern = "^MT-")
+  seurat_obj[["ribo.genes"]] <- PercentageFeatureSet(seurat_obj, pattern = "^RPS|RPL-")
+  return(seurat_obj)
+}
 
-for (i in seq_along(file_list)){
-    tmp <-  Read10X(paste0("./inputs/data/GSE169440/", file_list[i], "/filtered_feature_bc_matrix/"))
-   
-    tmp <- CreateAssayObject(counts = tmp)
-    SeuratObj <-  CreateSeuratObject(counts = tmp, 
-                                     assay = "RNA",
-                               project = file_list[i])
-    
-    SeuratObj$nCount_RNA <- colSums(SeuratObj@assays$RNA@counts)
-    SeuratObj$nFeature_RNA <- colSums(SeuratObj@assays$RNA@counts != 0)
-    # Filter out low count/feature cells
-    SeuratObj <-  subset(SeuratObj, subset = nFeature_RNA > 100) 
-    
-    #Change Barcode Names to Unique with the sample name
-    SeuratObj  <- RenameCells(object = SeuratObj , new.names = paste0(file_list[i], "_", rownames(SeuratObj[[]])))
-    
-    SeuratObj[["mito.genes"]] <- PercentageFeatureSet(SeuratObj, pattern = "^MT-")
-    SeuratObj[["ribo.genes"]] <- PercentageFeatureSet(SeuratObj, pattern = "^RPS|RPL-")
-    
-    VlnPlot(object = SeuratObj, 
-            features = c("nCount_RNA", "nFeature_RNA", "mito.genes", "ribo.genes"), 
-            pt.size = 0, 
-            cols = "grey") + 
-      theme(legend.position = "none") + 
-      plot_layout(ncol =2)
-    ggsave(paste0("./qc/", file_list[i], "_metrics.pdf"), height = 8, width=8)
-    
-    
-    
-    ###########################
-    #Filtering step
-    ############################
-    standev <- sd(log(SeuratObj$nFeature_RNA))*2 #cutting off above standard deviation of 2
-    mean <- mean(log(SeuratObj$nFeature_RNA))
-    cut <- round(exp(standev+mean))
-    FeatureScatter(SeuratObj, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") + 
-      geom_hline(yintercept = cut)
-    ggsave(paste0("./qc/", file_list[i], "_cutpoint.pdf"), height = 8, width=8)
-    
-    SeuratObj <- subset(SeuratObj, subset = mito.genes < 10 & nFeature_RNA < cut)
-    
-    ###########################################
-    #Estimate Doublets for Each Sequencing Run
-    ############################################
-    sce <- as.SingleCellExperiment(SeuratObj)
-    sce <- scDblFinder(sce)
-    doublets <- data.frame(db.class = sce$scDblFinder.class, db.score = sce$scDblFinder.score)
-    rownames(doublets) <- rownames(sce@colData)
-    SeuratObj <- AddMetaData(SeuratObj, doublets)
+plot_qc_metrics <- function(seurat_obj, file_name) {
+  p <- VlnPlot(
+    object = seurat_obj,
+    features = c("nCount_RNA", "nFeature_RNA", "mito.genes", "ribo.genes"),
+    pt.size = 0,
+    cols = "grey"
+  ) +
+    theme(legend.position = "none") +
+    plot_layout(ncol = 2)
+  ggsave(paste0("./qc/", file_name, "_metrics.pdf"), plot = p, height = 8, width = 8)
+}
 
-    
-    ###########################################
-    #Seurat Azimuth Annotation
-    ############################################
-    AzimuthObj <- RunAzimuth(SeuratObj, 
-                      reference = "pbmcref",
-                      verbose = FALSE)
-    meta <- AzimuthObj[[]]
-    SeuratObj <- AddMetaData(SeuratObj, meta)
-    rm(AzimuthObj)
-      
-    #############################################
-    #Singler Annotation of Cell Types
-    #############################################
-      
-    com.res1 <- SingleR(sce, ref=HPCA, labels=HPCA$label.fine, assay.type.test=1)
+filter_cells <- function(seurat_obj, file_name) {
+  standev <- sd(log(seurat_obj$nFeature_RNA)) * 2
+  mean_val <- mean(log(seurat_obj$nFeature_RNA))
+  cut <- round(exp(standev + mean_val))
   
-    df <- data.frame("labels" = com.res1$labels, "pruned.labels" = com.res1$pruned.labels)
-    rownames(df) <- rownames(com.res1)
-    colnames(df) <- paste0("HPCA.", colnames(df))
-    SeuratObj <- AddMetaData(SeuratObj,  df)
+  p <- FeatureScatter(seurat_obj, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") +
+    geom_hline(yintercept = cut)
+  ggsave(paste0("./qc/", file_name, "_cutpoint.pdf"), plot = p, height = 8, width = 8)
   
-    
-    com.res2 <- SingleR(sce, ref=Monaco, labels=Monaco$label.fine, assay.type.test=1)
-    df <- data.frame("labels" = com.res2$labels, "pruned.labels" = com.res2$pruned.labels)
-    rownames(df) <- rownames(com.res1)
-    colnames(df) <- paste0("Monaco.", colnames(df))
-    SeuratObj <- AddMetaData(SeuratObj,  df)
-    rm(df)
-    rm(sce)
-      
-    ######################################
-    #Adding Clonal Information
-    ######################################
-    
-    TCR.file <- list.files(paste0("./inputs/data/GSE169440/", file_list[i], "/TCR"), pattern = "annotations")[1]
-    TCR.file <- read.csv(paste0("./inputs/data/GSE169440/", file_list[i], "/TCR/", TCR.file))
-    combinedTCR <- combineTCR(TCR.file, 
-                              samples = file_list[i], 
-                              filterMulti = TRUE)
-    
-    BCR.file <- list.files(paste0("./inputs/data/GSE169440/", file_list[i], "/BCR"), pattern = "annotations")[1]
-    BCR.file <- read.csv(paste0("./inputs/data/GSE169440/", file_list[i], "/BCR/", BCR.file))
-    combinedBCR <- combineBCR(BCR.file, 
-                              samples = file_list[i])
-    
-    SeuratObj <- combineExpression(c(combinedTCR, combinedBCR), 
-                                    SeuratObj, 
-                                    cloneCall="strict", 
-                                    proportion = TRUE)
-    
-    
-    scGateModelDb <- suppressWarnings(get_scGateDB("data/scGateDB"))
-    SeuratObj <- scGate(SeuratObj, scGateModelDb$human$generic)
+  seurat_obj <- subset(seurat_obj, subset = mito.genes < 10 & nFeature_RNA < cut)
+  return(seurat_obj)
+}
 
-    cells.to.keep <- which(SeuratObj$is.pure_Tcell == "Pure" | SeuratObj$is.pure_Bcell == "Pure" | SeuratObj$is.pure_PlasmaCell == "Pure")
-    clones.recovered <- which(!is.na(SeuratObj$CTaa))
-    cells.to.keep <- intersect(cells.to.keep, clones.recovered)
-    SeuratObj <- subset(SeuratObj, cells = colnames(SeuratObj)[cells.to.keep])
+annotate_with_singler <- function(sce, ref, ref_name) {
+  com.res <- SingleR(sce, ref = ref, labels = ref$label.fine, assay.type.test = 1)
+  df <- data.frame("labels" = com.res$labels, "pruned.labels" = com.res$pruned.labels)
+  rownames(df) <- rownames(com.res)
+  colnames(df) <- paste0(ref_name, ".", colnames(df))
+  return(df)
+}
 
-    #################################
-    #Saving Preliminary Seurat Object
-    #################################
-    saveRDS(SeuratObj, paste0("./inputs/data/processedData/", file_list[i], ".rds"))
-    rm(SeuratObj)
-    rm(tmp)
-    gc()
+# Download and prepare reference datasets if not already present
+if (!exists("HPCA")) {
+  HPCA <- celldex::HumanPrimaryCellAtlasData()
+}
+if (!exists("Monaco")) {
+  Monaco <- celldex::MonacoImmuneData()
+}
+
+# Main processing loop
+for (file in file_list) {
+  message("Processing ", file)
+  
+  # 1. Read Data and Create Seurat Object
+  tmp <- Read10X(paste0("./inputs/data/GSE169440/", file, "/filtered_feature_bc_matrix/"))
+  
+  SeuratObj <- CreateSeuratObject(counts = tmp, assay = "RNA", project = file) %>%
+    subset(subset = nFeature_RNA > 100) # Filter out low count/feature cells early
+  
+  # Remove tmp to free up memory
+  rm(tmp)
+  
+  # 2. Calculate QC Metrics and Rename Cells
+  SeuratObj <- calculate_qc_metrics(SeuratObj)
+  SeuratObj <- RenameCells(SeuratObj, new.names = paste0(file, "_", colnames(SeuratObj)))
+
+  # 3. Plot QC Metrics
+  plot_qc_metrics(SeuratObj, file)
+
+  # 4. Filter Cells
+  SeuratObj <- filter_cells(SeuratObj, file)
+
+  # 5. Estimate Doublets
+  sce <- as.SingleCellExperiment(SeuratObj)
+  sce <- scDblFinder(sce)
+  doublets <- data.frame(db.class = sce$scDblFinder.class, db.score = sce$scDblFinder.score)
+  rownames(doublets) <- rownames(sce@colData)
+  SeuratObj <- AddMetaData(SeuratObj, doublets)
+
+  # 6. Azimuth Annotation
+  SeuratObj <- RunAzimuth(SeuratObj, reference = "pbmcref", verbose = FALSE)
+  
+  # 7. SingleR Annotation
+  SeuratObj <- AddMetaData(SeuratObj, annotate_with_singler(sce, HPCA, "HPCA"))
+  SeuratObj <- AddMetaData(SeuratObj, annotate_with_singler(sce, Monaco, "Monaco"))
+  
+  rm(sce)
+
+  # 8. Add Clonal Information
+  TCR.file <- list.files(paste0("./inputs/data/GSE169440/", file, "/TCR"), pattern = "annotations")[1]
+  TCR.file <- read.csv(paste0("./inputs/data/GSE169440/", file, "/TCR/", TCR.file))
+  combinedTCR <- combineTCR(TCR.file, samples = file, filterMulti = TRUE)
+
+  BCR.file <- list.files(paste0("./inputs/data/GSE169440/", file, "/BCR"), pattern = "annotations")[1]
+  BCR.file <- read.csv(paste0("./inputs/data/GSE169440/", file, "/BCR/", BCR.file))
+  combinedBCR <- combineBCR(BCR.file, samples = file)
+
+  SeuratObj <- combineExpression(c(combinedTCR, combinedBCR), SeuratObj, cloneCall = "strict", proportion = TRUE)
+
+  # 9. scGate Filtering
+  suppressWarnings({
+    scGateModelDb <- get_scGateDB("data/scGateDB") 
+  })
+  SeuratObj <- scGate(SeuratObj, scGateModelDb$human$generic)
+
+  cells.to.keep <- which(SeuratObj$is.pure_Tcell == "Pure" | SeuratObj$is.pure_Bcell == "Pure" | SeuratObj$is.pure_PlasmaCell == "Pure")
+  clones.recovered <- which(!is.na(SeuratObj$CTaa))
+  cells.to.keep <- intersect(cells.to.keep, clones.recovered)
+  SeuratObj <- subset(SeuratObj, cells = colnames(SeuratObj)[cells.to.keep])
+
+  # 10. Save Preliminary Seurat Object
+  saveRDS(SeuratObj, paste0("./inputs/data/processedData/", file, ".rds"))
+  rm(SeuratObj)
+  gc()
 }
 ```
 
 ## Integrate Cohort
 
 ```{r}
-files <- list.files("./inputs/data/processedData/")
+dir.create("./output", showWarnings = FALSE)
+# 1. Read and merge data
+files <- list.files("./inputs/data/processedData/", full.names = TRUE)
 
-object.list <- lapply(seq_len(length(files)), function(x) {
-    obj <- readRDS(paste0("./inputs/data/processedData/", files[x]))
+object.list <- lapply(files, function(file) {
+  readRDS(file)
 })
-object.merge <- merge(object.list[[1]], object.list[-1])
 
-object.merge  <- NormalizeData(object.merge )
-object.merge  <- FindVariableFeatures(object.merge, nfeatures = 2500)
+# Use reduce and merge for a more efficient merge
+object.merge <- Reduce(function(x, y) merge(x, y), object.list)
 
-object.merge <- Ibex::quietBCRgenes(object.merge)
-object.merge <- Trex::quietTCRgenes(object.merge)
+# 2. Preprocessing and Integration
+object.merge <- object.merge %>%
+  NormalizeData() %>%
+  FindVariableFeatures(nfeatures = 2500) %>%
+  Ibex::quietBCRgenes() %>% # Corrected function call using quietly
+  Trex::quietTCRgenes() %>% # Corrected function call using quietly
+  ScaleData(verbose = FALSE, 
+            vars.to.regress = c("mito.genes")) %>%
+  RunPCA(verbose = FALSE) %>%
+  RunHarmony("orig.ident")
 
-object.merge  <- ScaleData(object.merge,
-                           verbose = FALSE, 
-                           vars.to.regress = c("mito.genes"))
-object.merge  <- RunPCA(object.merge, 
-                        verbose = FALSE)
-object.merge <- RunHarmony(object.merge, "orig.ident")
+# 3. Clustering and Visualization
+object.merge <- object.merge %>%
+  RunUMAP(reduction = "harmony", 
+          dims = 1:30, 
+          reduction.name = "umap.harmony") %>%
+  FindNeighbors(dims = 1:30, 
+                reduction = "harmony") %>%
+  FindClusters(algorithm = 4, 
+               resolution = 0.4)
 
-object.merge <- RunUMAP(object.merge, 
-                        reduction = "harmony", 
-                        dims = 1:30, 
-                        reduction.name = "umap.harmony") 
+# 4. Defining Cell Types By Cluster
+cluster.types <- c("CD4_TCM/Naive", 
+                   "CD4_T1_Inf_Stimulated", 
+                   "CD4_TH17", 
+                   "CD8_Exhausted", 
+                   "CD4_Treg", 
+                   "CD8_TEM",
+                   "CD8_CTL", 
+                   "B Cells", 
+                   "CD8_TCM/Naive", 
+                   "CD4/CD8_Proliferating", 
+                   "MAIT", 
+                   "Plasma_Cell", 
+                   "CD4_TEM", 
+                   "Plasma_Cell", 
+                   "CD4_TEM")
+cluster.types <- setNames(cluster.types, as.character(1:15))
+object.merge$Cluster_Types <- recode(as.character(object.merge$seurat_clusters), !!!cluster.types)
 
-#################
-#TO DO List
-##################
-#Cluster Cells/Find Neighbors
+#5. Plotting UMAP by Cell type and Clonal Expansion
+celltype.palette <- tableau_color_pal(palette = "Tableau 20")(length(unique(object.merge$Cluster_Types)))
+object.merge$Cluster_Types <- factor(object.merge$Cluster_Types, sort(unique(object.merge$Cluster_Types))[c(2:11,1,12)])
+
+DimPlot(object.merge, group.by = "Cluster_Types") + 
+  scale_color_manual(values = celltype.palette) + 
+  theme_minimal() + 
+  theme(plot.title = element_blank(), 
+        axis.title = element_text(family="Arial", size=8, color = "black"), 
+        axis.text = element_text(family="Arial", size=6, color = "black")) + 
+  
+  ylab("UMAP2") + 
+  xlab("UMAP1")
+ggsave("output/Figure1A_P1.png", height = 4, width = 6.5, dpi = 300)
+
+DimPlot(object.merge, group.by = "cloneSize") + 
+  scale_color_viridis(option = "inferno", discrete = TRUE, direction = -1) + 
+  theme_minimal() + 
+  theme(plot.title = element_blank(), 
+        axis.title = element_text(family="Arial", size=8, color = "black"), 
+        axis.text = element_text(family="Arial", size=6, color = "black")) + 
+  
+  ylab("UMAP2") + 
+  xlab("UMAP1")
+ggsave("output/Figure1A_P2.png", height = 4, width = 7.0, dpi = 300)
+
+# 6. Save the integrated object
+saveRDS(object.merge, "./inputs/data/IntegratedSeuratObject.rds")
+```
+
+## Clonal Analysis
+
+```{r}
+clonalProportion(object.merge,
+                  group.by = "orig.ident", 
+                  cloneCall = "strict", 
+                 clonalSplit = c(1, 5, 10, 100, 1000, 10000)) + 
+  coord_flip()
+```
+
+```{r}
+percentGenes(object.merge, 
+             gene = "V", 
+             chain = "TRB",
+             group.by = "orig.ident")
+df.genes <- percentGenes(object.merge, 
+                         gene = "V", 
+                         chain = "TRB",
+                         group.by = "orig.ident",
+                         exportTable = TRUE)
+
+#Performing PCA
+pc <- prcomp(df.genes)
+
+#Getting data frame to plot from
+df <- as.data.frame(cbind(pc$x[,1:2], rownames(df.genes)))
+df$PC1 <- as.numeric(df$PC1)
+df$PC2 <- as.numeric(df$PC2)
+
+#Plotting
+ggplot(df, aes(x = PC1, y = PC2)) + 
+  geom_point(aes(fill =df[,3]), shape = 21, size = 5) + 
+  guides(fill=guide_legend(title="Samples")) + 
+  scale_fill_manual(values = hcl.colors(nrow(df), "inferno")) + 
+  theme_classic() 
+
+percentGenes(object.merge, 
+             gene = "V", 
+             chain = "TRA",
+             group.by = "orig.ident")
+
+df.genes <- percentGenes(object.merge, 
+                         gene = "V", 
+                         chain = "TRA",
+                         group.by = "orig.ident",
+                         exportTable = TRUE)
+
+#Performing PCA
+pc <- prcomp(df.genes)
+
+#Getting data frame to plot from
+df <- as.data.frame(cbind(pc$x[,1:2], rownames(df.genes)))
+df$PC1 <- as.numeric(df$PC1)
+df$PC2 <- as.numeric(df$PC2)
+
+#Plotting
+ggplot(df, aes(x = PC1, y = PC2)) + 
+  geom_point(aes(fill =df[,3]), shape = 21, size = 5) + 
+  guides(fill=guide_legend(title="Samples")) + 
+  scale_fill_manual(values = hcl.colors(nrow(df), "inferno")) + 
+  theme_classic() 
+```
 
 
-saveRDS(object.merge, paste0("./inputs/data/IntegratedSeuratObject.rds"))
+```{r}
+clonalRarefaction(object.merge,
+                  group.by = "orig.ident",
+                  plot.type = 2,
+                  hill.numbers = 1,
+                  n.boots = 2)
+```
+
+```{r}
+clonalSizeDistribution(object.merge,
+                       group.by = "orig.ident", 
+                       cloneCall = "aa", 
+                       method= "ward.D2")
+```
+
+```{r}
+object.merge <- clonalCluster(object.merge, 
+                               chain = "TRB", 
+                               sequence = "aa", 
+                               threshold = 0.85, 
+                               group.by = "orig.ident")
+
+DimPlot(object.merge, group.by = "TRB_cluster") +
+    scale_color_manual(values =  hcl.colors(n=length(unique(object.merge@meta.data[,"TRB_cluster"])), "inferno")) + 
+  NoLegend()
+
+object.merge <- clonalCluster(object.merge, 
+                               chain = "TRA", 
+                               sequence = "aa", 
+                               threshold = 0.85, 
+                               group.by = "orig.ident")
+
+DimPlot(object.merge, group.by = "TRA_cluster") +
+    scale_color_manual(values =  hcl.colors(n=length(unique(object.merge@meta.data[,"TRA_cluster"])), "inferno")) + 
+  NoLegend()
+```
+```{r}
+igraph.object <- clonalCluster(object.merge, 
+                               chain = "TRB", 
+                               sequence = "aa", 
+                               threshold = 0.85, 
+                               group.by = "orig.ident", 
+                               exportGraph = TRUE)
+```
+
+```{r}
+circles <- getCirclize(object.merge, 
+                       group.by = "Cluster_Types")
+
+#Just assigning the normal colors to each cluster
+names(celltype.palette) <- 1:15
+
+#Graphing the chord diagram
+chordDiagram(circles, self.link = 1, grid.col = grid.cols)
 ```
 
