@@ -1,3 +1,6 @@
+This is the repository for the analysis of erythema migrans skin and lesional data set used in the scRepertoire v2 manuscript. 
+
+More information on the original data set can be found at: [JCI Insights](https://insight.jci.org/articles/view/148035).
 
 ### Folder Structure
 ```
